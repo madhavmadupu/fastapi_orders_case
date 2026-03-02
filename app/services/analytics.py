@@ -67,6 +67,10 @@ def enrich_order(o: Order) -> EnrichedOrder:
     if failed_payments >= 2:
         risk_flags.append("MULTI_FAILED_PAYMENTS")
 
+    # Payment Amount Mismatch
+    if paid_amount > 0 and paid_amount != net_payable and payment_status != "refunded":
+        risk_flags.append("PAYMENT_AMOUNT_MISMATCH")
+
     # Address changed after pay
     paid_time = None
     for ev in o.events:
@@ -106,7 +110,8 @@ def enrich_order(o: Order) -> EnrichedOrder:
         payment_status=payment_status,
         fulfillment_status=fulfillment_status,
         delivery_tat_hours=delivery_tat_hours,
-        risk_flags=risk_flags
+        risk_flags=risk_flags,
+        meta=o.meta
     )
 
 def summary(enriched: List[EnrichedOrder]) -> Dict:
@@ -122,11 +127,32 @@ def summary(enriched: List[EnrichedOrder]) -> Dict:
 
     sku_rev = Counter()
     city_gmv = Counter()
+    
+    refunded_count = 0
+    returned_count = 0
+    marketing_channel_gmv = defaultdict(lambda: {"total_orders": 0, "gmv": 0})
+    marketing_coupon_uses = defaultdict(lambda: {"uses": 0, "gmv": 0})
+
     for o in enriched:
         city = o.customer.city or "unknown"
         city_gmv[city] += o.net_payable
         for it in o.items:
             sku_rev[it.sku] += it.qty * it.unit_price
+        
+        if o.payment_status == "refunded":
+            refunded_count += 1
+        if o.fulfillment_status == "returned":
+            returned_count += 1
+            
+        if o.meta:
+            channel = o.meta.get("channel")
+            if channel:
+                marketing_channel_gmv[channel]["total_orders"] += 1
+                marketing_channel_gmv[channel]["gmv"] += getattr(o, "order_value", 0)
+            coupon = o.meta.get("coupon")
+            if coupon:
+                marketing_coupon_uses[coupon]["uses"] += 1
+                marketing_coupon_uses[coupon]["gmv"] += getattr(o, "order_value", 0)
 
     return {
         "total_orders": total,
@@ -137,6 +163,14 @@ def summary(enriched: List[EnrichedOrder]) -> Dict:
         "avg_delivery_tat_hours": round(avg_tat, 2) if avg_tat is not None else None,
         "top_skus_by_revenue": sku_rev.most_common(5),
         "top_cities_by_gmv": city_gmv.most_common(5),
+        "rates": {
+            "return_rate": round(returned_count / total, 4) if total > 0 else 0,
+            "refund_rate": round(refunded_count / total, 4) if total > 0 else 0,
+        },
+        "marketing_efficacy": {
+            "by_channel": dict(marketing_channel_gmv),
+            "by_coupon": dict(marketing_coupon_uses)
+        }
     }
 
 def funnel(enriched: List[EnrichedOrder]) -> Dict:

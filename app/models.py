@@ -116,3 +116,4 @@ class EnrichedOrder(BaseModel):
     fulfillment_status: str
     delivery_tat_hours: Optional[float] = None
     risk_flags: List[str] = Field(default_factory=list)
+    meta: Optional[dict[str, Any]] = None
