@@ -1,15 +1,19 @@
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends, status
 from typing import Optional
-from app.state import STATE
+from app.models import Order
+from app.repositories.order_repository import OrderRepository, get_order_repository
 
 router = APIRouter(tags=["orders"])
 
 @router.get("/orders/{order_id}")
-def get_order(order_id: str):
-    o = STATE["enriched_by_id"].get(order_id)
+def get_order(
+    order_id: str,
+    repository: OrderRepository = Depends(get_order_repository)
+):
+    o = repository.get_by_id(order_id)
     if not o:
-        raise HTTPException(status_code=404, detail="order not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="order not found")
     return o
 
 @router.get("/orders")
@@ -22,22 +26,47 @@ def search_orders(
     max_value: Optional[int] = Query(default=None, ge=0),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    repository: OrderRepository = Depends(get_order_repository)
 ):
-    rows = STATE["enriched"]
-    if status:
-        rows = [o for o in rows if o["fulfillment_status"] == status]
-    if payment_status:
-        rows = [o for o in rows if o["payment_status"] == payment_status]
-    if city:
-        rows = [o for o in rows if (o["customer"].get("city") or "").lower() == city.lower()]
-    if customer_tier:
-        rows = [o for o in rows if (o["customer"].get("tier") or "").lower() == customer_tier.lower()]
-    if min_value is not None:
-        rows = [o for o in rows if o["net_payable"] >= min_value]
-    if max_value is not None:
-        rows = [o for o in rows if o["net_payable"] <= max_value]
+    return repository.search(status, payment_status, city, customer_tier, min_value, max_value, page, page_size)
 
-    total = len(rows)
-    start = (page-1)*page_size
-    end = start + page_size
-    return {"total": total, "page": page, "page_size": page_size, "results": rows[start:end]}
+@router.post("/orders", status_code=status.HTTP_201_CREATED)
+def create_order(
+    order: Order,
+    repository: OrderRepository = Depends(get_order_repository)
+):
+    existing = repository.get_by_id(order.order_id)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Order with id {order.order_id} already exists."
+        )
+    return repository.create(order)
+
+@router.put("/orders/{order_id}")
+def update_order(
+    order_id: str,
+    order: Order,
+    repository: OrderRepository = Depends(get_order_repository)
+):
+    if order.order_id != order_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Order ID in payload does not match URL path."
+        )
+    
+    updated = repository.update(order_id, order)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="order not found")
+    
+    return updated
+
+@router.delete("/orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_order(
+    order_id: str,
+    repository: OrderRepository = Depends(get_order_repository)
+):
+    deleted = repository.delete(order_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="order not found")
+    return None
